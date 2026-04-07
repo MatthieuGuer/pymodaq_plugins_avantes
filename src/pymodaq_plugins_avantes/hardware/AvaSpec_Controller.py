@@ -185,7 +185,7 @@ class AvantesController:
                 average_nb
         """
         self._measurement_config.m_NrAverages = n_average
-        avaspec.AVS_PrepareMeasure(self._devive_handle,
+        avaspec.AVS_PrepareMeasure(self._device_handle,
                                    self._measurement_config)
         # NB: return: SUCCESS = 0 or FAILURE <> 0; not currently used
 
@@ -261,7 +261,7 @@ class AvantesController:
                                -6  = ERR_TIMEOUT (error in communication)
                                -1  = ERR_INVALID_PARAMETER
         """
-        return avaspec.AVS_SetAnalogOut(self._devive_handle, pin_no, value)
+        return avaspec.AVS_SetAnalogOut(self._device_handle, pin_no, value)
 
     @property
     def wavelengths(self):
