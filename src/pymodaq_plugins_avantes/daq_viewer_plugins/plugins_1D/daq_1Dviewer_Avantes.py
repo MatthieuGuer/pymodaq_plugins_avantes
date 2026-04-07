@@ -30,6 +30,10 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
             'tip': 'Number of averages'},
             {'title': 'Device list', 'name': 'device_list',
                 'type': 'list', 'limits': serials},
+            {'title': 'Sensitivity:', 'name': 'sensitivity',
+                'type': 'list', 'limits': ["Low noise", "High sensitivity"]},
+            {'title': 'High resolution:', 'name': 'high_resolution',
+                'type': 'bool', 'value': True, 'tip': '14 or 16 bit'},
             {'title': 'Timestamp:', 'name': 'timestamp',
             'type': 'bool', 'value': False, 'tip': 'Also returns a timestamp'},
             # { 'title': 'X-Axis in wavenumbers:', 'name': 'wavenumber',
@@ -44,7 +48,7 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
          ]},
 
         {'title': 'Digital outputs', 'name': 'digital_outputs',
-         'type': 'group', 'children': [
+         'type': 'group', 'expanded':False, 'children': [
             {'title': 'Output %d:' % (i + 1), 'name': 'output_%d' % (i + 1),
             'type': 'led_push', 'value': False, 'tip': 'Logic level on putput %d' % (i + 1)} 
             for i in range(10)
@@ -66,7 +70,10 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
             self.controller.set_number_of_averages(param.value())
         elif param.name() == "timestamp":
             self.timestamp = param.value()
-            print(self.timestamp)
+        elif param.name() == "sensitivity":
+            self.controller.set_sensitivity_mode(param.value())
+        elif param.name() == "high_resolution":
+            self.controller.set_resolution(param.value())
         elif param.name()[:7] == 'output_':
             # Note: digital outputs are not really parameters. However and
             # for the time being, this seems to come closest to PyMoDAQ's
@@ -114,8 +121,10 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
         else:
             self.controller = controller
 
+        if self.settings.child('spectrometer_settings', 'high_resolution').value():
+            self.controller.set_resolution(True)
+        self.controller.set_sensitivity_mode(self.settings.child('spectrometer_settings', 'sensitivity').value())
         initialized = True
-
         return info, initialized
 
     def close(self):

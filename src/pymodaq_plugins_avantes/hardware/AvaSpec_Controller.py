@@ -194,6 +194,17 @@ class AvantesController:
                                    self._measurement_config)
         # NB: return: SUCCESS = 0 or FAILURE <> 0; not currently used
 
+    def set_resolution(self, high_res=False):
+        ret = avaspec.AVS_UseHighResAdc(self._device_handle, high_res)
+
+    def set_sensitivity_mode(self, mode="Low noise"):
+        """ 0 > low noise, 1 > high sensitivity """
+        if mode == "Low Noise":
+            m = 0
+        else:
+            m = 1
+        ret = avaspec.AVS_SetSensitivityMode(self._device_handle, m)
+
     def get_digital_input(self, pin_no: int) -> int:
         """
         Returns the status of the specified digital input
