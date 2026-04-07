@@ -12,6 +12,22 @@ class AvsDeviceType(Enum):
     AS7010 = 3
     AS7007 = 4
 
+def get_devices_list():
+    """ Get the devices connected and their serial number.
+    
+    Returns
+    -------
+    serial_numbers : list of str
+    device_dict : dict of devices object indexed by serial number
+    """
+    device_nb = avaspec.AVS_Init(-1)
+
+    if device_nb > 0:
+        device_list = avaspec.AVS_GetList()
+        serial_numbers = [f"{device.SerialNumber.decode("utf-8")}" for device in device_list]
+        return(serial_numbers, {serial_numbers[i]:device_list[i] for i in range(len(serial_numbers))})
+    return([], {})
+
 
 class AvantesController:
     """
@@ -45,7 +61,7 @@ class AvantesController:
         self._scan_count = 0
         # shouldn't this go to the PyMoDAQ parameters?
 
-    def open_communication(self) -> bool:
+    def open_communication(self, device) -> bool:
         """
         Open the USB communication with an Avantes Spectrometer
 
@@ -53,23 +69,14 @@ class AvantesController:
         -------
                 True on succes, else False
         """
-        # Initializes the communication interface with the spectrometers-
-        # param "0" indicates USB use
         if avaspec.lib is None:
             return False
 
-        nb_of_found_devices = avaspec.AVS_Init(0)
-        nb_of_found_USB_devices = avaspec.AVS_UpdateUSBDevices()
-        if nb_of_found_USB_devices < 1:
-            return False
-
-        # Get spectrometer identity, serial number and information
-        device_list = avaspec.AVS_GetList(1)
-        self._serial_number = str(device_list[0].SerialNumber.decode("utf-8"))
+        self._serial_number = str(device.SerialNumber.decode("utf-8"))
         self._initialized = True
 
         # Activate spectrometer for communication and get a handle on it
-        self._device_handle = avaspec.AVS_Activate(device_list[0])
+        self._device_handle = avaspec.AVS_Activate(device)
 
         # Get device configuration (number of pixels and wavelength)
         device_config = avaspec.AVS_GetParameter(self._device_handle, 63484)
@@ -111,7 +118,13 @@ class AvantesController:
         """
         Close communication
         """
+        ret = avaspec.AVS_Deactivate(self._device_handle)
+        if ret:
+            print('Successfully closed ' + self.serial_number)
+        else:
+            print('Problem closing...')
         avaspec.AVS_Done()
+        #If using this AVS_Done, need to call again the AVS_Init() to open another device
 
     def set_default_config(self):
         """
