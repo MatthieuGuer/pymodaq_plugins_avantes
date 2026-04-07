@@ -47,7 +47,7 @@ else: # Windows will have 'win32' or 'cygwin'
         # Try to get the full path because daq_viewer with WinDLL needs a full path
         #--------------------------------------------------------------------------
         current_path = os.path.dirname(os.path.realpath(__file__))
-        print(current_path)
+        # print(current_path)
         dll_path = os.path.join(current_path,'avaspecx64.dll')
         lib = ctypes.WinDLL(dll_path)
         # --------------------------------------------------------------------------
