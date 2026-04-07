@@ -5,8 +5,8 @@ from pymodaq.utils.data import DataFromPlugins, Axis, DataToExport, DataRaw
 from pymodaq.control_modules.viewer_utility_classes import DAQ_Viewer_base, \
     comon_parameters, main
 from pymodaq.utils.parameter import Parameter
-from pymodaq_plugins_avantes.hardware.AvaSpec_ULS2048CL_EVO_Controller \
-    import AvantesController
+from pymodaq_plugins_avantes.hardware.AvaSpec_Controller \
+    import AvantesController, get_devices_list
 
 
 class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
@@ -18,26 +18,56 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
 
     # define controller type for easy autocompletion
     controller_type = AvantesController
+    serials, devices = get_devices_list()
 
     params = comon_parameters+[
-        {'title': 'Integration time [ms]:', 'name': 'integration_time',
-         'type': 'float', 'min': 0.001, 'value': 500,
-         'tip': 'Integration time in milliseconds'},
-        { 'title': 'X-Axis in wavenumbers:', 'name': 'wavenumber',
-          'type': 'bool', 'value': False },
-    ] + [ {'title': 'Output %d:' % (i + 1), 'name': 'output_%d' % (i + 1),
-           'type': 'led_push', 'value': False,
-           'tip': 'Logic level on putput %d' % (i + 1) } \
-          for i in range(10)
+        {'title': 'Spectrometer settings:', 'name': 'spectrometer_settings',
+         'type': 'group', 'children':[
+            {'title': 'Integration time [ms]:', 'name': 'integration_time',
+            'type': 'float', 'min': 0.001, 'value': 100,
+            'tip': 'Integration time in milliseconds'},
+            {'title': 'Average:', 'name': 'number_average',
+            'type': 'int', 'min': 1, 'value': 1,
+            'tip': 'Number of averages'},
+            {'title': 'Device list', 'name': 'device_list',
+                'type': 'list', 'limits': serials},
+            {'title': 'Timestamp:', 'name': 'timestamp',
+            'type': 'bool', 'value': False, 'tip': 'Also returns a timestamp'},
+            # { 'title': 'X-Axis in wavenumbers:', 'name': 'wavenumber',
+            # 'type': 'bool', 'value': False },
+        ]},
+        {'title': 'Calibration settings:', 'name': 'calibration_setting',
+         'type': 'group', 'children':[
+            {'title': 'Calibration:', 'name': 'calibration',
+            'type': 'bool', 'value': False},
+            {'title': 'Calibration File:', 'name': 'calibration_file',
+            'type': 'str', 'value': '', 'tip':'Path to calibration file'},
+         ]},
+
+        {'title': 'Digital outputs', 'name': 'digital_outputs',
+         'type': 'group', 'children': [
+            {'title': 'Output %d:' % (i + 1), 'name': 'output_%d' % (i + 1),
+            'type': 'led_push', 'value': False, 'tip': 'Logic level on putput %d' % (i + 1)} 
+            for i in range(10)
+        ]},
+
     ]
 
     def ini_attributes(self):
         self.controller: self.controller_type = None
         self.x_axis = None
+        self.timestamp = False
+        self.serial_number = self.settings.child('spectrometer_settings', 'device_list').value()
+        get_devices_list()  #needed if we close and open again, because of AVS_Done()
 
     def commit_settings(self, param: Parameter):
         if param.name() == "integration_time":
             self.controller.set_integration_time(param.value())
+        elif param.name() == "number_average":
+            self.controller.set_number_of_averages(param.value())
+        elif param.name() == "timestamp":
+            self.timestamp = param.value()
+            print(self.timestamp)
         elif param.name()[:7] == 'output_':
             # Note: digital outputs are not really parameters. However and
             # for the time being, this seems to come closest to PyMoDAQ's
@@ -66,7 +96,7 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
 
         if self.is_master:
             self.controller = self.controller_type()
-            if self.controller.open_communication():
+            if self.controller.open_communication(self.devices[self.serial_number]):
                 info = "Avantes Spectro initilialized"
             else:
                 info = "No Avantes Spectro detected"
@@ -108,14 +138,23 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
 
         data,timestamp = self.controller.grab_spectrum()
 
-        dwa0D_timestamp = \
-            DataRaw('timestamp', units='dimensionless',
-                    data=np.array([timestamp]))
+        # dwa0D_timestamp = \
+        #     DataRaw('timestamp', units='dimensionless',
+        #             data=np.array([timestamp]))
 
         dfp = DataFromPlugins(name='Avantes', data=data, dim='Data1D',
                               labels=['data'], axes=[self.x_axis])
-        self.dte_signal.emit(DataToExport(name='spectrum',
-                                          data=[dfp, dwa0D_timestamp]))
+
+        if self.timestamp:
+            dwa0D_timestamp = \
+                DataRaw('timestamp', units='dimensionless',
+                        data=np.array([timestamp]))
+            self.dte_signal.emit(DataToExport(name='spectrum',
+                                            data= [dfp, dwa0D_timestamp]))
+        else:
+            self.dte_signal.emit(DataToExport(name='spectrum',
+                                            data= [dfp]))
+
  
     def stop(self):
         self.controller.abort_measurement()
