@@ -1,5 +1,4 @@
 import numpy as np
-from qtpy.QtCore import Signal
 from pymodaq.utils.daq_utils import ThreadCommand
 from pymodaq.utils.data import DataFromPlugins, Axis, DataToExport, DataRaw
 from pymodaq.control_modules.viewer_utility_classes import DAQ_Viewer_base, \
@@ -18,7 +17,7 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
 
     # define controller type for easy autocompletion
     controller_type = AvantesController
-    serials, devices = get_devices_list()
+    serials = get_devices_list()
 
     params = comon_parameters+[
         {'title': 'Spectrometer settings:', 'name': 'spectrometer_settings',
@@ -96,10 +95,11 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
 
         if self.is_master:
             self.controller = self.controller_type()
-            if self.controller.open_communication(self.devices[self.serial_number]):
+            # if self.controller.open_communication(self.devices[self.serial_number]):
+            if self.controller.open_communication(self.serial_number):
                 info = "Avantes Spectro initilialized"
             else:
-                info = "No Avantes Spectro detected"
+                info = "Avantes initialisation failed"
                 return info, False
 
             wavelengths = self.controller.wavelengths
@@ -139,9 +139,6 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
 
         data,timestamp = self.controller.grab_spectrum()
 
-        # dwa0D_timestamp = \
-        #     DataRaw('timestamp', units='dimensionless',
-        #             data=np.array([timestamp]))
 
         dfp = DataFromPlugins(name='Avantes', data=data, dim='Data1D',
                               labels=['data'], axes=[self.x_axis])

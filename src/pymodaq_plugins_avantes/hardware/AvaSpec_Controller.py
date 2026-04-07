@@ -18,15 +18,17 @@ def get_devices_list():
     Returns
     -------
     serial_numbers : list of str
-    device_dict : dict of devices object indexed by serial number
+    # device_dict : dict of devices object indexed by serial number
     """
     device_nb = avaspec.AVS_Init(-1)
 
     if device_nb > 0:
         device_list = avaspec.AVS_GetList()
         serial_numbers = [f"{device.SerialNumber.decode("utf-8")}" for device in device_list]
-        return(serial_numbers, {serial_numbers[i]:device_list[i] for i in range(len(serial_numbers))})
-    return([], {})
+        # return(serial_numbers, {serial_numbers[i]:device_list[i] for i in range(len(serial_numbers))})
+        return serial_numbers
+    # return([], {})
+    return([])
 
 
 class AvantesController:
@@ -61,7 +63,8 @@ class AvantesController:
         self._scan_count = 0
         # shouldn't this go to the PyMoDAQ parameters?
 
-    def open_communication(self, device) -> bool:
+    # def open_communication(self, device) -> bool:
+    def open_communication(self, serial_number) -> bool:
         """
         Open the USB communication with an Avantes Spectrometer
 
@@ -72,11 +75,13 @@ class AvantesController:
         if avaspec.lib is None:
             return False
 
-        self._serial_number = str(device.SerialNumber.decode("utf-8"))
+        # self._serial_number = str(device.SerialNumber.decode("utf-8"))
+        self._serial_number = serial_number
         self._initialized = True
 
         # Activate spectrometer for communication and get a handle on it
-        self._device_handle = avaspec.AVS_Activate(device)
+        # self._device_handle = avaspec.AVS_Activate(device)
+        self._device_handle = avaspec.AVS_GetHandleFromSerial(serial_number)
 
         # Get device configuration (number of pixels and wavelength)
         device_config = avaspec.AVS_GetParameter(self._device_handle, 63484)
