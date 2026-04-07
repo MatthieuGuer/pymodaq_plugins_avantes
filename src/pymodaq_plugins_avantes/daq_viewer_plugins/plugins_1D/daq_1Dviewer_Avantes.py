@@ -122,9 +122,10 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
         """Terminate the communication protocol"""
 
         self.controller.close_communication()
-        initialized = False
-
-        return initialized
+        self.controller = None
+        # initialized = False
+        # return initialized    
+        # This return makes pmd crash when closing + reopening
 
     def grab_data(self, Naverage=1, **kwargs):
         """Start grabbing from the detector
