@@ -50,7 +50,7 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
         {'title': 'Digital outputs', 'name': 'digital_outputs',
          'type': 'group', 'expanded':False, 'children': [
             {'title': 'Output %d:' % (i + 1), 'name': 'output_%d' % (i + 1),
-            'type': 'led_push', 'value': False, 'tip': 'Logic level on putput %d' % (i + 1)} 
+            'type': 'led_push', 'value': False, 'tip': 'Logic level on output %d' % (i + 1)} 
             for i in range(10)
         ]},
 
