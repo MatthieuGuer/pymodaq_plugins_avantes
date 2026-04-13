@@ -6,7 +6,9 @@ from pymodaq.control_modules.viewer_utility_classes import DAQ_Viewer_base, \
 from pymodaq.utils.parameter import Parameter
 from pymodaq_plugins_avantes.hardware.AvaSpec_Controller \
     import AvantesController, get_devices_list
-
+from scipy.interpolate import interp1d
+from pymodaq_utils.logger import set_logger, get_module_name
+logger = set_logger(get_module_name(__file__))
 
 class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
     """ Avantes Spectrometer Instrument plugin class for a 1D viewer.
@@ -44,7 +46,7 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
             {'title': 'Calibration:', 'name': 'calibration',
             'type': 'bool', 'value': False},
             {'title': 'Calibration File:', 'name': 'calibration_file',
-            'type': 'str', 'value': '', 'tip':'Path to calibration file'},
+            'type': 'file', 'tip':'Calibration file'},
          ]},
 
         {'title': 'Digital outputs', 'name': 'digital_outputs',
@@ -62,6 +64,7 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
         self.timestamp = False
         self.serial_number = self.settings.child('spectrometer_settings', 'device_list').value()
         get_devices_list()  #needed if we close and open again, because of AVS_Done()
+        self.calibration_func = lambda x:x
 
     def commit_settings(self, param: Parameter):
         if param.name() == "integration_time":
@@ -74,6 +77,8 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
             self.controller.set_sensitivity_mode(param.value())
         elif param.name() == "high_resolution":
             self.controller.set_resolution(param.value())
+        elif param.name() == "calibration_file":
+            self.make_calib_fun(param.value())
         elif param.name()[:7] == 'output_':
             # Note: digital outputs are not really parameters. However and
             # for the time being, this seems to come closest to PyMoDAQ's
@@ -147,7 +152,8 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
         """
 
         data,timestamp = self.controller.grab_spectrum()
-
+        if self.settings.child("calibration_setting", "calibration").value():
+            data /= self.calib_func(self.controller.wavelengths)
 
         dfp = DataFromPlugins(name='Avantes', data=data, dim='Data1D',
                               labels=['data'], axes=[self.x_axis])
@@ -171,6 +177,15 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
 
     def has_reference_shutter(self):
         return False
+
+    def make_calib_fun(self, fpath):
+        calibdat = np.loadtxt(fpath)
+        λcalib = calibdat[:, 0]
+        logger.info(f"Calibration is defined from {λcalib[0]:.2f}nm to {λcalib[-1]:.2f}nm")
+
+        calibfac = calibdat[:, 1]
+        self.calib_func = interp1d(λcalib, calibfac, kind=3, fill_value="extrapolate")
+
 
 if __name__ == '__main__':
     main(__file__)
