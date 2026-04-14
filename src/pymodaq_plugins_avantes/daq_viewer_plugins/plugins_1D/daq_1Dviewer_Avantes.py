@@ -64,7 +64,7 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
         self.timestamp = False
         self.serial_number = self.settings.child('spectrometer_settings', 'device_list').value()
         get_devices_list()  #needed if we close and open again, because of AVS_Done()
-        self.calibration_func = lambda x:x
+        self.calibration_curve = 1
 
     def commit_settings(self, param: Parameter):
         if param.name() == "integration_time":
@@ -78,7 +78,7 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
         elif param.name() == "high_resolution":
             self.controller.set_resolution(param.value())
         elif param.name() == "calibration_file":
-            self.make_calib_fun(param.value())
+            self.make_calib_curve(param.value())
         elif param.name()[:7] == 'output_':
             # Note: digital outputs are not really parameters. However and
             # for the time being, this seems to come closest to PyMoDAQ's
@@ -153,7 +153,7 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
 
         data,timestamp = self.controller.grab_spectrum()
         if self.settings.child("calibration_setting", "calibration").value():
-            data /= self.calib_func(self.controller.wavelengths)
+            data /= self.calibration_curve
 
         dfp = DataFromPlugins(name='Avantes', data=data, dim='Data1D',
                               labels=['data'], axes=[self.x_axis])
@@ -178,14 +178,16 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
     def has_reference_shutter(self):
         return False
 
-    def make_calib_fun(self, fpath):
-        calibdat = np.loadtxt(fpath)
-        λcalib = calibdat[:, 0]
-        logger.info(f"Calibration is defined from {λcalib[0]:.2f}nm to {λcalib[-1]:.2f}nm")
+    def make_calib_curve(self, fpath):
+        try:
+            calibdat = np.loadtxt(fpath)
+            λcalib = calibdat[:, 0]
+            logger.info(f"Calibration is defined from {λcalib[0]:.2f}nm to {λcalib[-1]:.2f}nm")
 
-        calibfac = calibdat[:, 1]
-        self.calib_func = interp1d(λcalib, calibfac, kind=3, fill_value="extrapolate")
-
+            calibfac = calibdat[:, 1]
+            self.calibration_curve = interp1d(λcalib, calibfac, kind=3, fill_value="extrapolate")(self.controller.wavelengths)
+        except:
+            print("Bad calibration file")
 
 if __name__ == '__main__':
     main(__file__)
