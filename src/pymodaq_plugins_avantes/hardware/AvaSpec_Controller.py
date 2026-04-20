@@ -60,6 +60,8 @@ class AvantesController:
         self._number_of_pixels = 4096
         self._wavelengths = [0.0] * 4096
         self._spectraldata = [0.0] * 4096
+        self.start_pixel = 0
+        self.stop_pixel = self._number_of_pixels - 1
         self._scan_count = 0
         # shouldn't this go to the PyMoDAQ parameters?
 
@@ -87,11 +89,9 @@ class AvantesController:
         device_config = avaspec.AVS_GetParameter(self._device_handle, 63484)
 
         self._number_of_pixels = device_config.m_Detector_m_NrPixels
-        full_wavelength_scale = avaspec.AVS_GetLambda(self._device_handle)
 
-        # The AvaSpec_ULS2048CL_EVO spectrometer has only 2048 elements,
-        # so split in 2
-        self._wavelengths = np.array_split(full_wavelength_scale, 2)[0]
+        self._full_wavelength = avaspec.AVS_GetLambda(self._device_handle)
+        self._wavelengths = self._full_wavelength[self.start_pixel:self.stop_pixel]
         #devicetype = avaspec.AVS_GetDeviceType(globals_var.dev_handle)
 
         self.hardware_present = True
@@ -139,8 +139,8 @@ class AvantesController:
         avaspec.AVS_UseHighResAdc(self._device_handle, True)
         # NB: return: SUCCESS = 0 or FAILURE <> 0; not currently used
 
-        self._measurement_config.m_StartPixel = 0
-        self._measurement_config.m_StopPixel = self._number_of_pixels - 1
+        # self._measurement_config.m_StartPixel = 0
+        # self._measurement_config.m_StopPixel = self._number_of_pixels - 1
         self._measurement_config.m_IntegrationTime = 100 # in ms
         self._measurement_config.m_IntegrationDelay = 0
         self._measurement_config.m_NrAverages = 1
@@ -158,14 +158,18 @@ class AvantesController:
         self._measurement_config.m_Control_m_LaserWidth = 0
         self._measurement_config.m_Control_m_LaserWaveLength = 0.0
         self._measurement_config.m_Control_m_StoreToRam = 0
-        result = avaspec.AVS_PrepareMeasure(self._device_handle,
-                                            self._measurement_config)
-        # NB: return: SUCCESS = 0 or FAILURE <> 0; not currently used
+
+        self._prepare_mesure()
 
         # measurement counter
         self._scan_count = 0
 
         time.sleep(0.001)
+
+    def _prepare_mesure(self):
+        ret = avaspec.AVS_PrepareMeasure(self._device_handle, self._measurement_config)
+        if ret != 0:
+            print(f"Prepare measurement failed: {ret}")
 
     def set_integration_time(self, integration_time: float):
         """
@@ -176,11 +180,21 @@ class AvantesController:
                 integration_time in [ms]
         """
         self._measurement_config.m_IntegrationTime = float(integration_time)
-        avaspec.AVS_PrepareMeasure(self._device_handle,
-                                   self._measurement_config)
-        # NB: return: SUCCESS = 0 or FAILURE <> 0; not currently used
+        self._prepare_mesure()
         self._integration_time = integration_time
 
+
+    def set_pixel_range(self, start_pixel, stop_pixel):
+        print(start_pixel)
+        print(stop_pixel)
+        print(f"Setting the range from {self._full_wavelength[start_pixel]:.2f} to {self._full_wavelength[stop_pixel]:.2f}")
+        self.start_pixel = start_pixel
+        self.stop_pixel  = stop_pixel
+        self._measurement_config.m_StartPixel = start_pixel
+        self._measurement_config.m_StopPixel  = stop_pixel
+        self._prepare_mesure()
+
+        
     def set_number_of_averages(self, n_average: int):
         """
         Set the number of average
@@ -190,12 +204,11 @@ class AvantesController:
                 average_nb
         """
         self._measurement_config.m_NrAverages = n_average
-        avaspec.AVS_PrepareMeasure(self._device_handle,
-                                   self._measurement_config)
-        # NB: return: SUCCESS = 0 or FAILURE <> 0; not currently used
+        self._prepare_mesure()
 
     def set_resolution(self, high_res=False):
         ret = avaspec.AVS_UseHighResAdc(self._device_handle, high_res)
+        self._prepare_mesure()
 
     def set_sensitivity_mode(self, mode="Low noise"):
         """ 0 > low noise, 1 > high sensitivity """
@@ -204,6 +217,7 @@ class AvantesController:
         else:
             m = 1
         ret = avaspec.AVS_SetSensitivityMode(self._device_handle, m)
+        self._prepare_mesure()
 
     def get_digital_input(self, pin_no: int) -> int:
         """
@@ -290,8 +304,9 @@ class AvantesController:
                 other elements are set to zeros  !!!
         """
 
-        full_scale = avaspec.AVS_GetLambda(self._device_handle)
-        return np.array_split(np.array(full_scale), 2)[0]
+        self._full_wavelength = avaspec.AVS_GetLambda(self._device_handle)
+        # return np.array_split(np.array(full_scale), 2)[0]
+        return np.array(self._full_wavelength)[self.start_pixel:self.stop_pixel]
 
     def grab_spectrum(self):
         """
@@ -317,10 +332,11 @@ class AvantesController:
         full_spectrometer_y_values = np.array(data[1])
 
         # get only 2048 elements by splitting in 2
-        result = np.array_split(full_spectrometer_y_values, 2)[0]
+        # result = np.array_split(full_spectrometer_y_values, 2)[0]
+        result = full_spectrometer_y_values[self.start_pixel:self.stop_pixel]
         self._scan_count += 1
         time.sleep(0.001)
-        return result,data[0]
+        return result, data[0]
 
     def abort_measurement(self):
         """
@@ -358,10 +374,10 @@ class AvantesController:
 
 ### simulating non existing device for debugging purpose
 
-PIN_SIGNAL     = 2
-PIN_REFERENCE  = 6
-PIN_AVALIGHT   = 3
-PIN_EXCITATION = 9
+# PIN_SIGNAL     = 2
+# PIN_REFERENCE  = 6
+# PIN_AVALIGHT   = 3
+# PIN_EXCITATION = 9
 
 
 class AvantesSimuController(AvantesController):

@@ -27,9 +27,13 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
             {'title': 'Integration time [ms]:', 'name': 'integration_time',
             'type': 'float', 'min': 0.001, 'value': 100,
             'tip': 'Integration time in milliseconds'},
+            {'title': 'Start pixel:', 'name': 'start_pixel',
+            'type': 'int', 'min': 0, 'max':4094, 'value': 0},
+            {'title': 'Stop pixel:', 'name': 'stop_pixel',
+            'type': 'int', 'min': 1, 'max':4095, 'value': 4093},
             {'title': 'Average:', 'name': 'number_average',
             'type': 'int', 'min': 1, 'value': 1,
-            'tip': 'Number of averages'},
+            'tip': 'Not implemented yet'},
             {'title': 'Device list', 'name': 'device_list',
                 'type': 'list', 'limits': serials},
             {'title': 'Sensitivity:', 'name': 'sensitivity',
@@ -41,6 +45,17 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
             # { 'title': 'X-Axis in wavenumbers:', 'name': 'wavenumber',
             # 'type': 'bool', 'value': False },
         ]},
+        {'title': 'Trigger settings:', 'name': 'trigger_setting',
+         'type': 'group', 'children':[
+            {'title': 'Trigger mode:', 'name': 'trigger_mode',
+            'type': 'list', 'value': ["Software", "Hardware", "Single scan"]},
+            #Single scan only for AS7010 and AS5216 (with custom firmware)
+            {'title': 'Trigger Source:', 'name': 'trigger_source',
+            'type': 'list', 'limits':["External", "Synchronized"]},
+            {'title': 'Trigger type:', 'name': 'trigger_type',
+            'type': 'list', 'limits':["Edge", "Level"]},
+            #Level type only for AS5216 and AS7010
+         ]},
         {'title': 'Calibration settings:', 'name': 'calibration_setting',
          'type': 'group', 'children':[
             {'title': 'Calibration:', 'name': 'calibration',
@@ -69,6 +84,22 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
     def commit_settings(self, param: Parameter):
         if param.name() == "integration_time":
             self.controller.set_integration_time(param.value())
+        elif param.name() in ["start_pixel", "stop_pixel"]:
+            self.controller.set_pixel_range(
+                self.settings.child('spectrometer_settings', 'start_pixel').value(),
+                self.settings.child('spectrometer_settings', 'stop_pixel').value()
+            )
+            wavelengths = self.controller.wavelengths
+            self.x_axis = Axis(label='Wavelength', units='nm',
+                                data=wavelengths, index=0)
+            
+            dfp = DataFromPlugins(name='Avantes',
+                                  data=[np.zeros(len(wavelengths))],
+                                  dim='Data1D', axes=[self.x_axis],
+                                  labels=['Avantes-Signal'])
+            self.dte_signal_temp.emit(DataToExport(name='Avantes', data=[dfp]))
+
+
         elif param.name() == "number_average":
             self.controller.set_number_of_averages(param.value())
         elif param.name() == "timestamp":
@@ -113,6 +144,11 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
             else:
                 info = "Avantes initialisation failed"
                 return info, False
+            
+            self.controller.set_pixel_range(
+                self.settings.child('spectrometer_settings', 'start_pixel').value(),
+                self.settings.child('spectrometer_settings', 'stop_pixel').value()
+            )
 
             wavelengths = self.controller.wavelengths
             self.x_axis = Axis(label='Wavelength', units='nm',
@@ -159,9 +195,8 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
                               labels=['data'], axes=[self.x_axis])
 
         if self.timestamp:
-            dwa0D_timestamp = \
-                DataRaw('timestamp', units='dimensionless',
-                        data=np.array([timestamp]))
+            dwa0D_timestamp = DataRaw('timestamp', units='dimensionless',
+                                        data=np.array([timestamp]))
             self.dte_signal.emit(DataToExport(name='spectrum',
                                             data= [dfp, dwa0D_timestamp]))
         else:
