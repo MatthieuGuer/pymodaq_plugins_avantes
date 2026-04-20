@@ -12,6 +12,57 @@ class AvsDeviceType(Enum):
     AS7010 = 3
     AS7007 = 4
 
+error_message_dict = {
+    0: "Operation succeeded",
+    -1: " Function called with invalid parameter value.",
+    -2: " e.g. Function called to use 16bit ADC mode, with 14bit ADC hardware",
+    -3: "Opening communication failed or time-out during communication occurred.",
+    -4: "AvsHandle is unknown in the DLL",
+    -5: "Function is called while result of previous call to AVS_Measure() is not received yet",
+    -6: "No answer received from device",
+    -7: "-",
+    -8: "No measurement data is received at the point AVS_GetScopeData() is called",
+    -9: "Allocated buffer size too small",
+    -10: "Measurement preparation failed because pixel range is invalid",
+    -11: "Measurement preparation failed because integration time is invalid (for selected sensor)",
+    -12: "Measurement preparation failed because of an invalid combination of parameters",
+    -13: "-",
+    -14: "Measurement preparation failed because no measurement buffers available",
+    -15: "Unknown error reason received from spectrometer",
+    -16: "Error in communication or Ethernet connection failure",
+    -17: "No more spectra available in RAM, all read or measurement not started yet",
+    -18: "DLL version information could not be retrieved",
+    -19: "Memory allocation error in the DLL",
+    -20: "Function called before AVS_Init() is called",
+    -21: "Function failed because AvaSpec is in wrong state (e.g. AVS_Measure() without calling AVS_PrepareMeasurement() first)",
+    -22: " Reply is not a recognized protocol message",
+    -23: "-",
+    -24: "Error occurred while opening a bus device on the host. E.g. USB device access denied due to user rights",
+    -25: "A read error has occurred. Spectrometer has failed when reading, for example, the Device Configuration settings from the internal flash memory",
+    -26: "A write error has occurred. Spectrometer has failed when writing, for example, the Device Configuration settings into the internal flash memory",
+    -27: "DLL could not be initialized due to an Ethernet connection initialization error which is caused by the presence of another DLL instance running on the same machine. It also could have been caused by calling the AVS_Init() function too quickly after calling AVS_Done(). In case of ERR_ETHCONN_REUSE, AVS_Init() can be invoked again to retry the initialization.",
+    -100: "NrOfPixel in Device data incorrect",
+    -101: "Gain Setting out of range",
+    -102: "Offset Setting out of range",
+    -110: "Use of Saturation Detection Level 2 is not compatible with the Averaging function ",
+    -111: "Use of Averaging is not compatible with the StoreToRam function ",
+    -112: "Use of the Synchronize setting is not compatible with the StoreToRam function",
+    -113: "Use of Level Triggering is not compatible with the StoreToRam function",
+    -114: "Use of Saturation Detection Level 2 Parameter is not compatible with the StoreToRam function",
+    -115: "The StoreToRam function is only supported with firmware version 0.20.0.0 or later.",
+    -116: "Dynamic Dark Correction not supported",
+    -120: "Use of AVS_SetSensitivityMode() not supported by detector type",
+    -121: "Use of AVS_SetSensitivityMode() not supported by firmware version",
+    -122: "Use of AVS_SetSensitivityMode() not supported by FPGA version",
+    -140: "Spectrometer was not calibrated for stray light correction",
+    -141: "Incorrect start pixel found in EEPROM",
+    -142: "Incorrect end pixel found in EEPROM",
+    -143: "Incorrect start or end pixel found in EEPROM",
+    -144: "Factor should be in range 0.0 – 4.0",
+}
+
+
+
 def get_devices_list():
     """ Get the devices connected and their serial number.
     
@@ -170,6 +221,10 @@ class AvantesController:
         ret = avaspec.AVS_PrepareMeasure(self._device_handle, self._measurement_config)
         if ret != 0:
             print(f"Prepare measurement failed: {ret}")
+            try:
+                print(f"{error_message_dict[ret]}")
+            except KeyError:
+                print("Unknown error ?")
 
     def set_integration_time(self, integration_time: float):
         """
@@ -203,6 +258,7 @@ class AvantesController:
         ---------
                 average_nb
         """
+        print(f"Number of averages set to {n_average}.")
         self._measurement_config.m_NrAverages = n_average
         self._prepare_mesure()
 
@@ -317,7 +373,14 @@ class AvantesController:
         -------
                 none, only update globals_vars
         """
-        avaspec.AVS_Measure(self._device_handle, 0, 1)
+        ret = avaspec.AVS_Measure(self._device_handle, 0, 1)
+        if ret != 0:
+            print(f"Measurement failed: {ret}")
+            try:
+                print(f"{error_message_dict[ret]}")
+            except KeyError:
+                print("Unknown error ?")
+
         # NB: return: SUCCESS = 0 or FAILURE <> 0; not currently used
         time.sleep(0.005)
         time.sleep(self._measurement_config.m_IntegrationTime/1000)
