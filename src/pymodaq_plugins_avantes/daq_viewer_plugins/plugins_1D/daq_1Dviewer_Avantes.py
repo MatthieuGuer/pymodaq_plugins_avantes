@@ -33,7 +33,7 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
             'type': 'int', 'min': 1, 'max':4095, 'value': 4093},
             {'title': 'Average:', 'name': 'number_average',
             'type': 'int', 'min': 1, 'value': 1,
-            'tip': 'Not implemented yet'},
+            'tip': 'Not working yet'},
             {'title': 'Device list', 'name': 'device_list',
                 'type': 'list', 'limits': serials},
             {'title': 'Sensitivity:', 'name': 'sensitivity',
@@ -45,18 +45,23 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
             # { 'title': 'X-Axis in wavenumbers:', 'name': 'wavenumber',
             # 'type': 'bool', 'value': False },
         ]},
-        {'title': 'Trigger settings:', 'name': 'trigger_setting',
+        {'title': 'Trigger settings:', 'name': 'trigger_settings',
          'type': 'group', 'children':[
+            {'title': 'Burst mode:', 'name': 'burst_mode',
+            'type': 'bool', 'value':False},
+            {'title': 'Shot number:', 'name': 'shot_number',
+            'type': 'int', 'value':10, 'min':2, 'visible':False},
             {'title': 'Trigger mode:', 'name': 'trigger_mode',
-            'type': 'list', 'value': ["Software", "Hardware", "Single scan"]},
-            #Single scan only for AS7010 and AS5216 (with custom firmware)
+            'type': 'list', 'limits': ["Software", "Hardware", "Single scan"], 'value':"Software"},
+            #Single scan only for AS7010 and AS5216 (with custom firmware), not implemented yet
             {'title': 'Trigger Source:', 'name': 'trigger_source',
-            'type': 'list', 'limits':["External", "Synchronized"]},
+            'type': 'list', 'limits':["External", "Synchronized"], 'visible':False},
+            # Synchronized not implemented yet but I added it anyway
             {'title': 'Trigger type:', 'name': 'trigger_type',
-            'type': 'list', 'limits':["Edge", "Level"]},
-            #Level type only for AS5216 and AS7010
+            'type': 'list', 'limits':["Edge", "Level"], 'visible':False},
+            #Level type only for AS5216 and AS7010, not implemented yet
          ]},
-        {'title': 'Calibration settings:', 'name': 'calibration_setting',
+        {'title': 'Calibration settings:', 'name': 'calibration_settings',
          'type': 'group', 'children':[
             {'title': 'Calibration:', 'name': 'calibration',
             'type': 'bool', 'value': False},
@@ -79,8 +84,10 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
         self.timestamp = False
         self.serial_number = self.settings.child('spectrometer_settings', 'device_list').value()
         get_devices_list()  #needed if we close and open again, because of AVS_Done()
-        self.calibration_curve = 1
-
+        self.calibration_func = lambda x:1
+        self.burst_mode = self.settings.child('trigger_settings', 'burst_mode').value()
+        self.shot_number = self.settings.child('trigger_settings', 'shot_number').value()
+        
     def commit_settings(self, param: Parameter):
         if param.name() == "integration_time":
             self.controller.set_integration_time(param.value())
@@ -89,16 +96,7 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
                 self.settings.child('spectrometer_settings', 'start_pixel').value(),
                 self.settings.child('spectrometer_settings', 'stop_pixel').value()
             )
-            wavelengths = self.controller.wavelengths
-            self.x_axis = Axis(label='Wavelength', units='nm',
-                                data=wavelengths, index=0)
-            
-            dfp = DataFromPlugins(name='Avantes',
-                                  data=[np.zeros(len(wavelengths))],
-                                  dim='Data1D', axes=[self.x_axis],
-                                  labels=['Avantes-Signal'])
-            self.dte_signal_temp.emit(DataToExport(name='Avantes', data=[dfp]))
-
+            self.init_axis()
 
         elif param.name() == "number_average":
             self.controller.set_number_of_averages(param.value())
@@ -110,6 +108,27 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
             self.controller.set_resolution(param.value())
         elif param.name() == "calibration_file":
             self.make_calib_curve(param.value())
+            self.calibration_curve = self.calibration_func(self.controller.wavelengths)
+        elif param.name() == "burst_mode":
+            self.burst_mode = param.value()
+            self.settings.child('trigger_settings', 'shot_number').setOpts(visible=param.value())
+            if self.burst_mode:
+                self.shot_number = self.settings.child('trigger_settings', 'shot_number').value()
+            else:
+                self.shot_number = 1
+            self.init_axis()
+        elif param.name() == "shot_number":
+            self.shot_number = param.value()
+
+        elif param.name() == "trigger_mode":
+            # if param.value() == "Software":
+            #     # self.settings.child('trigger_settings', 'trigger_source').setOpts(visible=False)
+            #     # self.settings.child('trigger_settings', 'trigger_type').setOpts(visible=False)
+            # else:
+            #     # self.settings.child('trigger_settings', 'trigger_source').setOpts(visible=True)
+            #     # self.settings.child('trigger_settings', 'trigger_type').setOpts(visible=True)
+            self.controller.set_trigger_mode(mode=param.value())
+
         elif param.name()[:7] == 'output_':
             # Note: digital outputs are not really parameters. However and
             # for the time being, this seems to come closest to PyMoDAQ's
@@ -133,7 +152,6 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
         initialized: bool
             False if initialization failed otherwise True
         """
-
         self.ini_detector_init(slave_controller=controller)
 
         if self.is_master:
@@ -149,15 +167,8 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
                 self.settings.child('spectrometer_settings', 'start_pixel').value(),
                 self.settings.child('spectrometer_settings', 'stop_pixel').value()
             )
+            self.init_axis()
 
-            wavelengths = self.controller.wavelengths
-            self.x_axis = Axis(label='Wavelength', units='nm',
-                                data=wavelengths, index=0)
-            dfp = DataFromPlugins(name='Avantes',
-                                  data=[np.zeros(len(wavelengths))],
-                                  dim='Data1D', axes=[self.x_axis],
-                                  labels=['Avantes-Signal'])
-            self.dte_signal_temp.emit(DataToExport(name='Avantes', data=[dfp]))
             self.controller.set_default_config()
         else:
             self.controller = controller
@@ -165,8 +176,34 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
         if self.settings.child('spectrometer_settings', 'high_resolution').value():
             self.controller.set_resolution(True)
         self.controller.set_sensitivity_mode(self.settings.child('spectrometer_settings', 'sensitivity').value())
+        self.controller.set_trigger_mode(mode=self.settings.child('trigger_settings', 'trigger_mode').value())
         initialized = True
         return info, initialized
+
+    def init_axis(self):
+        wavelengths = self.controller.wavelengths
+        if not self.burst_mode:
+            self.x_axis = Axis(label='Wavelength', units='nm',
+                                data=wavelengths)
+            dfp = DataFromPlugins(name='Avantes',
+                                    data=[np.zeros(len(wavelengths))],
+                                    dim='Data1D', axes=[self.x_axis],
+                                    labels=['Avantes-Signal'])
+
+        else:
+            N = int(self.shot_number)
+            self.x_axis = Axis(label='Wavelength', units='nm',
+                                data=wavelengths)
+            shot_axis = Axis(label='Shot #', units='', data=np.arange(N))
+
+            dfp = DataFromPlugins(name='Avantes',
+                                    data=[np.random.random((N, len(wavelengths)))],
+                                    dim='Data2D',
+                                    axes=[shot_axis, self.x_axis],
+                                    # nav_indexes=(0,),
+                                    labels=['Avantes-Burst'])
+        self.calibration_curve = self.calibration_func(self.controller.wavelengths)
+        self.dte_signal_temp.emit(DataToExport(name='Avantes', data=[dfp]))
 
     def close(self):
         """Terminate the communication protocol"""
@@ -186,22 +223,33 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
         Naverage: int
             Number of hardware averaging.
         """
+        if not self.burst_mode:
+            data,timestamp = self.controller.grab_spectrum()
+            if self.settings.child("calibration_settings", "calibration").value():
+                data /= self.calibration_curve
 
-        data,timestamp = self.controller.grab_spectrum()
-        if self.settings.child("calibration_setting", "calibration").value():
-            data /= self.calibration_curve
+            dfp = DataFromPlugins(name='Avantes', data=data, dim='Data1D',
+                                labels=['data'], axes=[self.x_axis])
 
-        dfp = DataFromPlugins(name='Avantes', data=data, dim='Data1D',
-                              labels=['data'], axes=[self.x_axis])
-
-        if self.timestamp:
-            dwa0D_timestamp = DataRaw('timestamp', units='dimensionless',
-                                        data=np.array([timestamp]))
-            self.dte_signal.emit(DataToExport(name='spectrum',
-                                            data= [dfp, dwa0D_timestamp]))
+            if self.timestamp:
+                dwa0D_timestamp = DataRaw('timestamp', units='dimensionless',
+                                            data=np.array([timestamp]))
+                self.dte_signal.emit(DataToExport(name='spectrum',
+                                                data= [dfp, dwa0D_timestamp]))
+            else:
+                self.dte_signal.emit(DataToExport(name='spectrum', data= [dfp]))
         else:
-            self.dte_signal.emit(DataToExport(name='spectrum',
-                                            data= [dfp]))
+            N = int(self.shot_number)
+            data, _ = self.controller.grab_spectrum(N=N)
+            shot_axis = Axis(label='Shot #', units='', data=np.arange(N))
+            dfp = DataFromPlugins(name='Avantes',
+                        data=[data],
+                        dim='Data2D',
+                        axes=[shot_axis, self.x_axis],
+                        # nav_indexes=(0,),
+                        labels=['Avantes-Burst'])
+
+            self.dte_signal.emit(DataToExport(name='Avantes', data= [dfp]))
 
  
     def stop(self):
@@ -220,8 +268,9 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
             logger.info(f"Calibration is defined from {λcalib[0]:.2f}nm to {λcalib[-1]:.2f}nm")
 
             calibfac = calibdat[:, 1]
-            self.calibration_curve = interp1d(λcalib, calibfac, kind=3, fill_value="extrapolate")(self.controller.wavelengths)
+            self.calibration_func = interp1d(λcalib, calibfac, kind="cubic", fill_value="extrapolate")
         except:
+            self.calibration_func = lambda x:1
             print("Bad calibration file")
 
 if __name__ == '__main__':

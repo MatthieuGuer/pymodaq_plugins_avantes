@@ -12,54 +12,6 @@ class AvsDeviceType(Enum):
     AS7010 = 3
     AS7007 = 4
 
-error_message_dict = {
-    0: "Operation succeeded",
-    -1: " Function called with invalid parameter value.",
-    -2: " e.g. Function called to use 16bit ADC mode, with 14bit ADC hardware",
-    -3: "Opening communication failed or time-out during communication occurred.",
-    -4: "AvsHandle is unknown in the DLL",
-    -5: "Function is called while result of previous call to AVS_Measure() is not received yet",
-    -6: "No answer received from device",
-    -7: "-",
-    -8: "No measurement data is received at the point AVS_GetScopeData() is called",
-    -9: "Allocated buffer size too small",
-    -10: "Measurement preparation failed because pixel range is invalid",
-    -11: "Measurement preparation failed because integration time is invalid (for selected sensor)",
-    -12: "Measurement preparation failed because of an invalid combination of parameters",
-    -13: "-",
-    -14: "Measurement preparation failed because no measurement buffers available",
-    -15: "Unknown error reason received from spectrometer",
-    -16: "Error in communication or Ethernet connection failure",
-    -17: "No more spectra available in RAM, all read or measurement not started yet",
-    -18: "DLL version information could not be retrieved",
-    -19: "Memory allocation error in the DLL",
-    -20: "Function called before AVS_Init() is called",
-    -21: "Function failed because AvaSpec is in wrong state (e.g. AVS_Measure() without calling AVS_PrepareMeasurement() first)",
-    -22: " Reply is not a recognized protocol message",
-    -23: "-",
-    -24: "Error occurred while opening a bus device on the host. E.g. USB device access denied due to user rights",
-    -25: "A read error has occurred. Spectrometer has failed when reading, for example, the Device Configuration settings from the internal flash memory",
-    -26: "A write error has occurred. Spectrometer has failed when writing, for example, the Device Configuration settings into the internal flash memory",
-    -27: "DLL could not be initialized due to an Ethernet connection initialization error which is caused by the presence of another DLL instance running on the same machine. It also could have been caused by calling the AVS_Init() function too quickly after calling AVS_Done(). In case of ERR_ETHCONN_REUSE, AVS_Init() can be invoked again to retry the initialization.",
-    -100: "NrOfPixel in Device data incorrect",
-    -101: "Gain Setting out of range",
-    -102: "Offset Setting out of range",
-    -110: "Use of Saturation Detection Level 2 is not compatible with the Averaging function ",
-    -111: "Use of Averaging is not compatible with the StoreToRam function ",
-    -112: "Use of the Synchronize setting is not compatible with the StoreToRam function",
-    -113: "Use of Level Triggering is not compatible with the StoreToRam function",
-    -114: "Use of Saturation Detection Level 2 Parameter is not compatible with the StoreToRam function",
-    -115: "The StoreToRam function is only supported with firmware version 0.20.0.0 or later.",
-    -116: "Dynamic Dark Correction not supported",
-    -120: "Use of AVS_SetSensitivityMode() not supported by detector type",
-    -121: "Use of AVS_SetSensitivityMode() not supported by firmware version",
-    -122: "Use of AVS_SetSensitivityMode() not supported by FPGA version",
-    -140: "Spectrometer was not calibrated for stray light correction",
-    -141: "Incorrect start pixel found in EEPROM",
-    -142: "Incorrect end pixel found in EEPROM",
-    -143: "Incorrect start or end pixel found in EEPROM",
-    -144: "Factor should be in range 0.0 – 4.0",
-}
 
 
 
@@ -115,6 +67,7 @@ class AvantesController:
         self.stop_pixel = self._number_of_pixels - 1
         self._scan_count = 0
         # shouldn't this go to the PyMoDAQ parameters?
+        self._integration_time = 100
 
     # def open_communication(self, device) -> bool:
     def open_communication(self, serial_number) -> bool:
@@ -192,7 +145,7 @@ class AvantesController:
 
         # self._measurement_config.m_StartPixel = 0
         # self._measurement_config.m_StopPixel = self._number_of_pixels - 1
-        self._measurement_config.m_IntegrationTime = 100 # in ms
+        self._measurement_config.m_IntegrationTime = self._integration_time # in ms
         self._measurement_config.m_IntegrationDelay = 0
         self._measurement_config.m_NrAverages = 1
         self._measurement_config.m_CorDynDark_m_Enable = 0
@@ -219,12 +172,7 @@ class AvantesController:
 
     def _prepare_mesure(self):
         ret = avaspec.AVS_PrepareMeasure(self._device_handle, self._measurement_config)
-        if ret != 0:
-            print(f"Prepare measurement failed: {ret}")
-            try:
-                print(f"{error_message_dict[ret]}")
-            except KeyError:
-                print("Unknown error ?")
+        self.print_error_message(ret)
 
     def set_integration_time(self, integration_time: float):
         """
@@ -274,6 +222,17 @@ class AvantesController:
             m = 1
         ret = avaspec.AVS_SetSensitivityMode(self._device_handle, m)
         self._prepare_mesure()
+
+    def set_trigger_mode(self, mode="Software"):
+        if mode == "Software":
+            self._measurement_config.m_Trigger_m_Mode = 0
+            print("Software trigger")
+        elif mode == "Hardware":
+            self._measurement_config.m_Trigger_m_Mode = 1
+            print("Hardware trigger")
+        self._measurement_config.m_Trigger_m_Source = 0     #Not implemented yet
+        self._measurement_config.m_Trigger_m_SourceType = 0 #Not implemented yet
+
 
     def get_digital_input(self, pin_no: int) -> int:
         """
@@ -364,7 +323,7 @@ class AvantesController:
         # return np.array_split(np.array(full_scale), 2)[0]
         return np.array(self._full_wavelength)[self.start_pixel:self.stop_pixel]
 
-    def grab_spectrum(self):
+    def grab_spectrum(self, N=1):
         """
         Read the spectrum from the Avantes Spectrometer
         And store result in global_vars.spectrometer_y_values
@@ -373,33 +332,41 @@ class AvantesController:
         -------
                 none, only update globals_vars
         """
+
+        if N > 1:
+            self._measurement_config.m_Control_m_StoreToRam = N
+        self._prepare_mesure()
+
         ret = avaspec.AVS_Measure(self._device_handle, 0, 1)
-        if ret != 0:
-            print(f"Measurement failed: {ret}")
-            try:
-                print(f"{error_message_dict[ret]}")
-            except KeyError:
-                print("Unknown error ?")
+        self.print_error_message(ret)
 
-        # NB: return: SUCCESS = 0 or FAILURE <> 0; not currently used
-        time.sleep(0.005)
-        time.sleep(self._measurement_config.m_IntegrationTime/1000)
-        # at least wait for the integration time !
-        # we wait the measurement ends
-        while avaspec.AVS_PollScan(self._device_handle):
-            time.sleep(0.005)
+        measurement_time = N*self._measurement_config.m_IntegrationTime/1000 #in seconds
+        start_time = time.time()
+        done = False
+        time.sleep(measurement_time) # at least wait for the integration time !
+    
+        while not done and time.time() -start_time < 10*measurement_time:
+            done = bool(avaspec.AVS_PollScan(self._device_handle))
+        if done:
+            if N == 1:
+                timestamp, data = avaspec.AVS_GetScopeData(self._device_handle)
+                spectra = np.array(data)[self.start_pixel:self.stop_pixel]
+            else:
+                spectra = np.empty((N, len(self.wavelengths)))
+                timestamp = []
+                for i in range(N):
+                    timestamp_i, data = avaspec.AVS_GetScopeData(self._device_handle)
+                    spectra[i,:] = data[self.start_pixel:self.stop_pixel]
+                    timestamp.append(timestamp_i)
 
-        # we get the data with internal timestamp of the device
-        # which is currently not used
-        data = avaspec.AVS_GetScopeData(self._device_handle)
-        full_spectrometer_y_values = np.array(data[1])
-
-        # get only 2048 elements by splitting in 2
-        # result = np.array_split(full_spectrometer_y_values, 2)[0]
-        result = full_spectrometer_y_values[self.start_pixel:self.stop_pixel]
-        self._scan_count += 1
-        time.sleep(0.001)
-        return result, data[0]
+            print(np.shape(spectra))
+            self._scan_count += 1
+            # time.sleep(0.001)
+            self._measurement_config.m_Control_m_StoreToRam = 0
+            return spectra, timestamp
+        else:
+            print("Measurement timed out")
+            self.print_error_message(self.abort_measurement())
 
     def abort_measurement(self):
         """
@@ -409,7 +376,7 @@ class AvantesController:
         -------
                 SUCCESS = 0 or FAILURE <> 0
         """
-        self._is_grabbing = False
+        # self._is_grabbing = False
         return avaspec.AVS_StopMeasure(self._device_handle)
 
     def start_continuous_grabbing(self, callback):
@@ -433,6 +400,64 @@ class AvantesController:
         full_data = np.array(result[1])
         self._scan_count += 1
         self.pymodaq_callback(np.array_split(full_data, 2)[0])
+
+
+    error_message_dict = {
+        0: "Operation succeeded",
+        -1: " Function called with invalid parameter value.",
+        -2: " e.g. Function called to use 16bit ADC mode, with 14bit ADC hardware",
+        -3: "Opening communication failed or time-out during communication occurred.",
+        -4: "AvsHandle is unknown in the DLL",
+        -5: "Function is called while result of previous call to AVS_Measure() is not received yet",
+        -6: "No answer received from device",
+        -7: "-",
+        -8: "No measurement data is received at the point AVS_GetScopeData() is called",
+        -9: "Allocated buffer size too small",
+        -10: "Measurement preparation failed because pixel range is invalid",
+        -11: "Measurement preparation failed because integration time is invalid (for selected sensor)",
+        -12: "Measurement preparation failed because of an invalid combination of parameters",
+        -13: "-",
+        -14: "Measurement preparation failed because no measurement buffers available",
+        -15: "Unknown error reason received from spectrometer",
+        -16: "Error in communication or Ethernet connection failure",
+        -17: "No more spectra available in RAM, all read or measurement not started yet",
+        -18: "DLL version information could not be retrieved",
+        -19: "Memory allocation error in the DLL",
+        -20: "Function called before AVS_Init() is called",
+        -21: "Function failed because AvaSpec is in wrong state (e.g. AVS_Measure() without calling AVS_PrepareMeasurement() first)",
+        -22: " Reply is not a recognized protocol message",
+        -23: "-",
+        -24: "Error occurred while opening a bus device on the host. E.g. USB device access denied due to user rights",
+        -25: "A read error has occurred. Spectrometer has failed when reading, for example, the Device Configuration settings from the internal flash memory",
+        -26: "A write error has occurred. Spectrometer has failed when writing, for example, the Device Configuration settings into the internal flash memory",
+        -27: "DLL could not be initialized due to an Ethernet connection initialization error which is caused by the presence of another DLL instance running on the same machine. It also could have been caused by calling the AVS_Init() function too quickly after calling AVS_Done(). In case of ERR_ETHCONN_REUSE, AVS_Init() can be invoked again to retry the initialization.",
+        -100: "NrOfPixel in Device data incorrect",
+        -101: "Gain Setting out of range",
+        -102: "Offset Setting out of range",
+        -110: "Use of Saturation Detection Level 2 is not compatible with the Averaging function ",
+        -111: "Use of Averaging is not compatible with the StoreToRam function ",
+        -112: "Use of the Synchronize setting is not compatible with the StoreToRam function",
+        -113: "Use of Level Triggering is not compatible with the StoreToRam function",
+        -114: "Use of Saturation Detection Level 2 Parameter is not compatible with the StoreToRam function",
+        -115: "The StoreToRam function is only supported with firmware version 0.20.0.0 or later.",
+        -116: "Dynamic Dark Correction not supported",
+        -120: "Use of AVS_SetSensitivityMode() not supported by detector type",
+        -121: "Use of AVS_SetSensitivityMode() not supported by firmware version",
+        -122: "Use of AVS_SetSensitivityMode() not supported by FPGA version",
+        -140: "Spectrometer was not calibrated for stray light correction",
+        -141: "Incorrect start pixel found in EEPROM",
+        -142: "Incorrect end pixel found in EEPROM",
+        -143: "Incorrect start or end pixel found in EEPROM",
+        -144: "Factor should be in range 0.0 – 4.0",
+    }
+
+
+    def print_error_message(self, err_nb):
+        if err_nb < 0:
+            try:
+                print(f"{self.error_message_dict[err_nb]}")
+            except KeyError:
+                print("Unknown error ?")
 
 
 ### simulating non existing device for debugging purpose
