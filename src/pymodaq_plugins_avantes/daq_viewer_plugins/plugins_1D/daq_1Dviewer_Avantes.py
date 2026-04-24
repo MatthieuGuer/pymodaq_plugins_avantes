@@ -37,7 +37,7 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
             {'title': 'Device list', 'name': 'device_list',
                 'type': 'list', 'limits': serials},
             {'title': 'Sensitivity:', 'name': 'sensitivity',
-                'type': 'list', 'limits': ["Low noise", "High sensitivity"]},
+                'type': 'list', 'limits': ["None", "Low noise", "High sensitivity"], 'value':"None"},
             {'title': 'High resolution:', 'name': 'high_resolution',
                 'type': 'bool', 'value': True, 'tip': '14 or 16 bit'},
             {'title': 'Timestamp:', 'name': 'timestamp',

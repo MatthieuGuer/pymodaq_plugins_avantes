@@ -131,7 +131,8 @@ class AvantesController:
         if ret:
             print('Successfully closed ' + self.serial_number)
         else:
-            print('Problem closing...')
+            self.print_error_message(ret)
+
         avaspec.AVS_Done()
         #If using this AVS_Done, need to call again the AVS_Init() to open another device
 
@@ -140,11 +141,8 @@ class AvantesController:
         Configure the acquisition using the _measconfig object using
         default parameters and send the configuration to the spectrometer
         """
-        avaspec.AVS_UseHighResAdc(self._device_handle, True)
-        # NB: return: SUCCESS = 0 or FAILURE <> 0; not currently used
+        self.print_error_message(avaspec.AVS_UseHighResAdc(self._device_handle, True))
 
-        # self._measurement_config.m_StartPixel = 0
-        # self._measurement_config.m_StopPixel = self._number_of_pixels - 1
         self._measurement_config.m_IntegrationTime = self._integration_time # in ms
         self._measurement_config.m_IntegrationDelay = 0
         self._measurement_config.m_NrAverages = 1
@@ -188,8 +186,6 @@ class AvantesController:
 
 
     def set_pixel_range(self, start_pixel, stop_pixel):
-        print(start_pixel)
-        print(stop_pixel)
         print(f"Setting the range from {self._full_wavelength[start_pixel]:.2f} to {self._full_wavelength[stop_pixel]:.2f}")
         self.start_pixel = start_pixel
         self.stop_pixel  = stop_pixel
@@ -212,24 +208,26 @@ class AvantesController:
 
     def set_resolution(self, high_res=False):
         ret = avaspec.AVS_UseHighResAdc(self._device_handle, high_res)
+        self.print_error_message(ret)
         self._prepare_mesure()
 
     def set_sensitivity_mode(self, mode="Low noise"):
         """ 0 > low noise, 1 > high sensitivity """
-        if mode == "Low Noise":
+        if mode == "None":
+            return
+        elif mode == "Low Noise":
             m = 0
         else:
             m = 1
         ret = avaspec.AVS_SetSensitivityMode(self._device_handle, m)
+        self.print_error_message(ret)
         self._prepare_mesure()
 
     def set_trigger_mode(self, mode="Software"):
         if mode == "Software":
             self._measurement_config.m_Trigger_m_Mode = 0
-            print("Software trigger")
         elif mode == "Hardware":
             self._measurement_config.m_Trigger_m_Mode = 1
-            print("Hardware trigger")
         self._measurement_config.m_Trigger_m_Source = 0     #Not implemented yet
         self._measurement_config.m_Trigger_m_SourceType = 0 #Not implemented yet
 
@@ -350,16 +348,15 @@ class AvantesController:
         if done:
             if N == 1:
                 timestamp, data = avaspec.AVS_GetScopeData(self._device_handle)
-                spectra = np.array(data)[self.start_pixel:self.stop_pixel]
+                spectra = np.array(data)[:-self.start_pixel+self.stop_pixel]
             else:
                 spectra = np.empty((N, len(self.wavelengths)))
                 timestamp = []
                 for i in range(N):
                     timestamp_i, data = avaspec.AVS_GetScopeData(self._device_handle)
-                    spectra[i,:] = data[self.start_pixel:self.stop_pixel]
+                    spectra[i,:] = np.array(data)[:-self.start_pixel+self.stop_pixel]
                     timestamp.append(timestamp_i)
 
-            print(np.shape(spectra))
             self._scan_count += 1
             # time.sleep(0.001)
             self._measurement_config.m_Control_m_StoreToRam = 0
