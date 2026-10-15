@@ -27,7 +27,7 @@ def get_devices_list():
 
     if device_nb > 0:
         device_list = avaspec.AVS_GetList()
-        serial_numbers = [f"{device.SerialNumber.decode("utf-8")}" for device in device_list]
+        serial_numbers = [f"{device.SerialNumber.decode('utf-8')}" for device in device_list]
         # return(serial_numbers, {serial_numbers[i]:device_list[i] for i in range(len(serial_numbers))})
         return serial_numbers
     # return([], {})
@@ -68,6 +68,14 @@ class AvantesController:
         self._scan_count = 0
         # shouldn't this go to the PyMoDAQ parameters?
         self._integration_time = 100
+        self._needs_prepare = True
+        self._abort_requested = False
+        self._avs_cb = None  # keeps the ctypes callback alive
+
+    @property
+    def n_points(self) -> int:
+        """Number of pixels of the selected range (stop pixel is inclusive)"""
+        return self.stop_pixel - self.start_pixel + 1
 
     # def open_communication(self, device) -> bool:
     def open_communication(self, serial_number) -> bool:
@@ -81,13 +89,22 @@ class AvantesController:
         if avaspec.lib is None:
             return False
 
+        # AVS_Init must be called again after each AVS_Done (see close_communication)
+        devices = get_devices_list()
+        if not devices:
+            print("No Avantes device found")
+            return False
+        if serial_number not in devices:
+            print(f"Device {serial_number} not found, available devices: {devices}")
+            return False
+
         # self._serial_number = str(device.SerialNumber.decode("utf-8"))
         self._serial_number = serial_number
-        self._initialized = True
 
         # Activate spectrometer for communication and get a handle on it
         # self._device_handle = avaspec.AVS_Activate(device)
         self._device_handle = avaspec.AVS_GetHandleFromSerial(serial_number)
+        self._initialized = True
 
         # Get device configuration (number of pixels and wavelength)
         device_config = avaspec.AVS_GetParameter(self._device_handle, 63484)
@@ -95,7 +112,9 @@ class AvantesController:
         self._number_of_pixels = device_config.m_Detector_m_NrPixels
 
         self._full_wavelength = avaspec.AVS_GetLambda(self._device_handle)
-        self._wavelengths = self._full_wavelength[self.start_pixel:self.stop_pixel]
+        self.start_pixel = 0
+        self.stop_pixel = self._number_of_pixels - 1
+        self._wavelengths = self._full_wavelength[self.start_pixel:self.stop_pixel + 1]
         #devicetype = avaspec.AVS_GetDeviceType(globals_var.dev_handle)
 
         self.hardware_present = True
@@ -171,6 +190,8 @@ class AvantesController:
     def _prepare_mesure(self):
         ret = avaspec.AVS_PrepareMeasure(self._device_handle, self._measurement_config)
         self.print_error_message(ret)
+        self._needs_prepare = ret != 0
+        return ret
 
     def set_integration_time(self, integration_time: float):
         """
@@ -186,12 +207,26 @@ class AvantesController:
 
 
     def set_pixel_range(self, start_pixel, stop_pixel):
-        print(f"Setting the range from {self._full_wavelength[start_pixel]:.2f} to {self._full_wavelength[stop_pixel]:.2f}")
-        self.start_pixel = start_pixel
-        self.stop_pixel  = stop_pixel
-        self._measurement_config.m_StartPixel = start_pixel
-        self._measurement_config.m_StopPixel  = stop_pixel
+        """
+        Set the pixel range (both bounds included). Values are clamped to the
+        detector size and start is kept strictly lower than stop.
+
+        Returns
+        -------
+                (start_pixel, stop_pixel) actually applied
+        """
+        n = self._number_of_pixels
+        stop = min(max(int(stop_pixel), 1), n - 1)
+        start = min(max(int(start_pixel), 0), stop - 1)
+        if (start, stop) != (start_pixel, stop_pixel):
+            print(f"Pixel range adjusted to [{start}, {stop}] (detector has {n} pixels)")
+        print(f"Setting the range from {self._full_wavelength[start]:.2f} to {self._full_wavelength[stop]:.2f}")
+        self.start_pixel = start
+        self.stop_pixel  = stop
+        self._measurement_config.m_StartPixel = start
+        self._measurement_config.m_StopPixel  = stop
         self._prepare_mesure()
+        return start, stop
 
         
     def set_number_of_averages(self, n_average: int):
@@ -215,7 +250,7 @@ class AvantesController:
         """ 0 > low noise, 1 > high sensitivity """
         if mode == "None":
             return
-        elif mode == "Low Noise":
+        elif mode.lower() == "low noise":
             m = 0
         else:
             m = 1
@@ -224,12 +259,15 @@ class AvantesController:
         self._prepare_mesure()
 
     def set_trigger_mode(self, mode="Software"):
-        if mode == "Software":
-            self._measurement_config.m_Trigger_m_Mode = 0
-        elif mode == "Hardware":
+        if mode == "Hardware":
             self._measurement_config.m_Trigger_m_Mode = 1
+        else:
+            if mode != "Software":
+                print(f"Trigger mode '{mode}' is not implemented, using Software.")
+            self._measurement_config.m_Trigger_m_Mode = 0
         self._measurement_config.m_Trigger_m_Source = 0     #Not implemented yet
         self._measurement_config.m_Trigger_m_SourceType = 0 #Not implemented yet
+        self._prepare_mesure()
 
 
     def get_digital_input(self, pin_no: int) -> int:
@@ -319,51 +357,73 @@ class AvantesController:
 
         self._full_wavelength = avaspec.AVS_GetLambda(self._device_handle)
         # return np.array_split(np.array(full_scale), 2)[0]
-        return np.array(self._full_wavelength)[self.start_pixel:self.stop_pixel]
+        return np.array(self._full_wavelength)[self.start_pixel:self.stop_pixel + 1]
 
     def grab_spectrum(self, N=1):
         """
-        Read the spectrum from the Avantes Spectrometer
-        And store result in global_vars.spectrometer_y_values
+        Read N spectra from the Avantes Spectrometer (N > 1 uses StoreToRam)
 
         Returns
         -------
-                none, only update globals_vars
+                (spectra, timestamp), or None if the measurement failed,
+                timed out or was aborted
         """
+        cfg = self._measurement_config
+        store = N if N > 1 else 0
+        if store != cfg.m_Control_m_StoreToRam or self._needs_prepare:
+            cfg.m_Control_m_StoreToRam = store
+            if self._prepare_mesure() != 0:
+                cfg.m_Control_m_StoreToRam = 0
+                return None
 
-        if N > 1:
-            self._measurement_config.m_Control_m_StoreToRam = N
-        self._prepare_mesure()
-
+        self._abort_requested = False
         ret = avaspec.AVS_Measure(self._device_handle, 0, 1)
         self.print_error_message(ret)
+        if ret != 0:
+            return None
 
-        measurement_time = N*self._measurement_config.m_IntegrationTime/1000 #in seconds
+        hardware_trigger = cfg.m_Trigger_m_Mode == 1
+        # time needed to acquire everything, in seconds
+        measurement_time = N * max(cfg.m_NrAverages, 1) * cfg.m_IntegrationTime / 1000
+        # with an external trigger, wait until a trigger comes or abort is called
+        timeout = None if hardware_trigger else max(1.0, 10 * measurement_time)
         start_time = time.time()
+        if not hardware_trigger:
+            time.sleep(measurement_time)  # at least wait for the integration time !
+
         done = False
-        time.sleep(measurement_time) # at least wait for the integration time !
-    
-        while not done and time.time() -start_time < 10*measurement_time:
+        while not done and not self._abort_requested:
+            if timeout is not None and time.time() - start_time > timeout:
+                break
             done = bool(avaspec.AVS_PollScan(self._device_handle))
-        if done:
+            if not done:
+                time.sleep(0.001)
+
+        try:
+            if not done:
+                if not self._abort_requested:
+                    print("Measurement timed out")
+                    self.print_error_message(self.abort_measurement())
+                return None
+
+            n_points = self.n_points
             if N == 1:
                 timestamp, data = avaspec.AVS_GetScopeData(self._device_handle)
-                spectra = np.array(data)[:-self.start_pixel+self.stop_pixel]
+                spectra = np.array(data)[:n_points]
             else:
-                spectra = np.empty((N, len(self.wavelengths)))
+                spectra = np.empty((N, n_points))
                 timestamp = []
                 for i in range(N):
                     timestamp_i, data = avaspec.AVS_GetScopeData(self._device_handle)
-                    spectra[i,:] = np.array(data)[:-self.start_pixel+self.stop_pixel]
+                    spectra[i, :] = np.array(data)[:n_points]
                     timestamp.append(timestamp_i)
-
             self._scan_count += 1
-            # time.sleep(0.001)
-            self._measurement_config.m_Control_m_StoreToRam = 0
             return spectra, timestamp
-        else:
-            print("Measurement timed out")
-            self.print_error_message(self.abort_measurement())
+        finally:
+            if cfg.m_Control_m_StoreToRam != 0:
+                # StoreToRam must not stay active for the other settings
+                cfg.m_Control_m_StoreToRam = 0
+                self._needs_prepare = True
 
     def abort_measurement(self):
         """
@@ -373,15 +433,16 @@ class AvantesController:
         -------
                 SUCCESS = 0 or FAILURE <> 0
         """
-        # self._is_grabbing = False
+        self._abort_requested = True
         return avaspec.AVS_StopMeasure(self._device_handle)
 
     def start_continuous_grabbing(self, callback):
         print("controller start grabbing")
         self.pymodaq_callback = callback
-        avs_cb = avaspec.AVS_MeasureCallbackFunc(self.avantes_callback)
+        # keep a reference, otherwise the callback is garbage collected
+        self._avs_cb = avaspec.AVS_MeasureCallbackFunc(self.avantes_callback)
         self._scan_count = 0
-        avaspec.AVS_MeasureCallback(self._device_handle, avs_cb, -1)
+        avaspec.AVS_MeasureCallback(self._device_handle, self._avs_cb, -1)
         time.sleep(0.1)
 
     def avantes_callback(self, lparam1, lparam2):
@@ -396,7 +457,7 @@ class AvantesController:
         result = avaspec.AVS_GetScopeData(self._device_handle)
         full_data = np.array(result[1])
         self._scan_count += 1
-        self.pymodaq_callback(np.array_split(full_data, 2)[0])
+        self.pymodaq_callback(full_data[:self.n_points])
 
 
     error_message_dict = {
@@ -459,10 +520,10 @@ class AvantesController:
 
 ### simulating non existing device for debugging purpose
 
-# PIN_SIGNAL     = 2
-# PIN_REFERENCE  = 6
-# PIN_AVALIGHT   = 3
-# PIN_EXCITATION = 9
+PIN_SIGNAL     = 2
+PIN_REFERENCE  = 6
+PIN_AVALIGHT   = 3
+PIN_EXCITATION = 9
 
 
 class AvantesSimuController(AvantesController):
@@ -470,44 +531,41 @@ class AvantesSimuController(AvantesController):
 
     def __init__(self, initial_line_states=0):
         AvantesController.__init__(self)
+        self._number_of_pixels = 2048
+        self.start_pixel = 0
+        self.stop_pixel = self._number_of_pixels - 1
+        self._full_wavelength = np.linspace(300, 900, self._number_of_pixels)
+        self._wavelengths = self._full_wavelength
         self._pin_states = [initial_line_states for _ in range(10)]
-        self._signal = 3000 * np.exp(-((self.wavelengths - 600) / 300)**4)
-        self._induced = np.exp(-((self.wavelengths - 400) / 30)**2)
-        self._reference = 3500 * np.exp(-((self._wavelengths - 600) / 300)**4)
+        wl = self._full_wavelength
+        self._signal = 3000 * np.exp(-((wl - 600) / 300)**4)
+        self._induced = np.exp(-((wl - 400) / 30)**2)
+        self._reference = 3500 * np.exp(-((wl - 600) / 300)**4)
 
-    def open_communication(self):
+    def open_communication(self, serial_number="simulated") -> bool:
+        self._serial_number = serial_number
+        self._initialized = True
+        self.hardware_present = True
         self._pin_states[PIN_AVALIGHT-1]   = 1
         self._pin_states[PIN_SIGNAL-1]     = 1
         self._pin_states[PIN_REFERENCE-1]  = 0
         self._pin_states[PIN_EXCITATION-1] = 1
         return True
 
-    @staticmethod
-    def close_communication():
+    def close_communication(self):
         pass
 
-    def configure_acquisition_by_default(self):
+    def set_default_config(self):
         pass
 
-    def set_integration_time(self, integration_time: int):
-        """
-        Set the integration time in [ms]
+    def _prepare_mesure(self):
+        return 0
 
-        Parameter
-        ---------
-                integration_time in [ms]
-        """
-        self._measurement_config.m_IntegrationTime = float(integration_time)
+    def set_resolution(self, high_res=False):
+        pass
 
-    def set_number_of_averages(self, n_average: int):
-        """
-        Set the number of average
-
-        Parameter
-        ---------
-                average_nb
-        """
-        self._measurement_config.m_NrAverages = n_average
+    def set_sensitivity_mode(self, mode="Low noise"):
+        pass
 
     def get_digital_input(self, pin_no: int) -> int:
         return 0
@@ -521,59 +579,49 @@ class AvantesSimuController(AvantesController):
 
     @property
     def wavelengths(self):
-        """
-        Get an array of wavelength used by the spectrometer
-        Returns
-        -------
-                a "standard" array of 4096 elements whom, in case of a
-                Avaspec-ULS2048CL-EVO, 2048 has wavelength number,
-                other elements are set to zeros  !!!
-        """
+        """Wavelengths of the selected pixel range (2048 pixels simulated)"""
+        return self._full_wavelength[self.start_pixel:self.stop_pixel + 1]
 
-        self._wavelengths = np.linspace(300, 900, 2048)
-        return self._wavelengths
-
-    def grab_spectrum(self):
-        """
-        Read the spectrum from the Avantes Spectrometer
-        And store result in global_vars.spectrometer_y_values
-
-        Returns
-        -------
-                none, only update globals_vars
-        """
+    def _simulate_one(self):
         now = time.time()
         if not hasattr(self, "start_time"):
             self.start_time = now
         drift = 1 + 0.1 * np.sin(now / 20 * 2 * np.pi)
 
-        signal = np.random.normal(120, 4, 2048) #\
-#            * (1 + 0.1 * np.sin(now / 60 * 2 * np.pi))
+        signal = np.random.normal(120, 4, self._number_of_pixels)
 
         if self._pin_states[PIN_AVALIGHT - 1] == 0:
-            return signal, time.time()
+            return signal
 
         if self._pin_states[PIN_SIGNAL - 1] == 1:
             if self._pin_states[PIN_EXCITATION - 1] == 0:
                 signal += np.random.normal(self._signal * drift, 20)
             else:
                 kinetics = np.exp(-(now - self.start_time) / 120)
-                signal += \
-                    np.random.normal(self._signal * drift \
-                                    * (1 - 0.1 * (1 - kinetics) * self._induced),
+                signal +=                     np.random.normal(self._signal * drift
+                                     * (1 - 0.1 * (1 - kinetics) * self._induced),
                                      20)
 
         if self._pin_states[PIN_REFERENCE - 1] == 1:
             signal += np.random.normal(self._reference * drift, 20)
 
-        return signal, time.time()
+        return signal
 
-    def abort_measurement(self):
+    def grab_spectrum(self, N=1):
         """
-        Abort a running measurement
+        Simulate N spectra over the selected pixel range
 
         Returns
         -------
-                SUCCESS = 0 or FAILURE <> 
+                (spectra, timestamp) like AvantesController.grab_spectrum
         """
-        pass
+        sl = slice(self.start_pixel, self.stop_pixel + 1)
+        if N == 1:
+            return self._simulate_one()[sl], time.time()
+        spectra = np.array([self._simulate_one()[sl] for _ in range(N)])
+        return spectra, [time.time() for _ in range(N)]
+
+    def abort_measurement(self):
+        """Abort a running measurement (nothing to do in simulation)"""
+        self._abort_requested = True
+        return 0

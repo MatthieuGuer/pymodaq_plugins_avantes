@@ -30,7 +30,7 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
             {'title': 'Start pixel:', 'name': 'start_pixel',
             'type': 'int', 'min': 0, 'max':4094, 'value': 0},
             {'title': 'Stop pixel:', 'name': 'stop_pixel',
-            'type': 'int', 'min': 1, 'max':4095, 'value': 4093},
+            'type': 'int', 'min': 1, 'max':4095, 'value': 2047},
             {'title': 'Average:', 'name': 'number_average',
             'type': 'int', 'min': 1, 'value': 1,
             'tip': 'Not working yet'},
@@ -82,8 +82,7 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
         self.controller: self.controller_type = None
         self.x_axis = None
         self.timestamp = False
-        self.serial_number = self.settings.child('spectrometer_settings', 'device_list').value()
-        get_devices_list()  #needed if we close and open again, because of AVS_Done()
+        self.serial_number = None
         self.calibration_func = lambda x:1
         self.burst_mode = self.settings.child('trigger_settings', 'burst_mode').value()
         self.shot_number = self.settings.child('trigger_settings', 'shot_number').value()
@@ -92,11 +91,7 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
         if param.name() == "integration_time":
             self.controller.set_integration_time(param.value())
         elif param.name() in ["start_pixel", "stop_pixel"]:
-            self.controller.set_pixel_range(
-                self.settings.child('spectrometer_settings', 'start_pixel').value(),
-                self.settings.child('spectrometer_settings', 'stop_pixel').value()
-            )
-            self.init_axis()
+            self.apply_pixel_range()
 
         elif param.name() == "number_average":
             self.controller.set_number_of_averages(param.value())
@@ -108,7 +103,7 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
             self.controller.set_resolution(param.value())
         elif param.name() == "calibration_file":
             self.make_calib_curve(param.value())
-            self.calibration_curve = self.calibration_func(self.controller.wavelengths)
+            self.update_calibration_curve()
         elif param.name() == "burst_mode":
             self.burst_mode = param.value()
             self.settings.child('trigger_settings', 'shot_number').setOpts(visible=param.value())
@@ -119,6 +114,8 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
             self.init_axis()
         elif param.name() == "shot_number":
             self.shot_number = param.value()
+            if self.burst_mode:
+                self.init_axis()
 
         elif param.name() == "trigger_mode":
             # if param.value() == "Software":
@@ -155,6 +152,10 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
         self.ini_detector_init(slave_controller=controller)
 
         if self.is_master:
+            # rescan the devices (also calls AVS_Init, needed after a close) and
+            # use the one currently selected
+            if not self.refresh_device_list():
+                return "No Avantes device found", False
             self.controller = self.controller_type()
             # if self.controller.open_communication(self.devices[self.serial_number]):
             if self.controller.open_communication(self.serial_number):
@@ -163,22 +164,67 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
                 info = "Avantes initialisation failed"
                 return info, False
             
-            self.controller.set_pixel_range(
-                self.settings.child('spectrometer_settings', 'start_pixel').value(),
-                self.settings.child('spectrometer_settings', 'stop_pixel').value()
-            )
-            self.init_axis()
+            self.apply_pixel_range()
 
             self.controller.set_default_config()
         else:
             self.controller = controller
 
-        if self.settings.child('spectrometer_settings', 'high_resolution').value():
-            self.controller.set_resolution(True)
+        self.controller.set_resolution(self.settings.child('spectrometer_settings', 'high_resolution').value())
         self.controller.set_sensitivity_mode(self.settings.child('spectrometer_settings', 'sensitivity').value())
         self.controller.set_trigger_mode(mode=self.settings.child('trigger_settings', 'trigger_mode').value())
         initialized = True
         return info, initialized
+
+    def refresh_device_list(self):
+        """Rescan the connected devices, update the device list parameter and
+        set self.serial_number to the selected device (first one if the
+        previous selection is gone).
+
+        Returns
+        -------
+        bool: False if no device is connected
+        """
+        serials = get_devices_list()
+        param = self.settings.child('spectrometer_settings', 'device_list')
+        if not serials:
+            param.setLimits([])
+            self.serial_number = None
+            return False
+        selected = param.value()
+        param.setLimits(serials)
+        if selected not in serials:
+            selected = serials[0]
+        param.setValue(selected)
+        self.serial_number = selected
+        return True
+
+    def apply_pixel_range(self):
+        """Send the pixel range to the controller, which clamps it to the
+        detector size, then reflect the applied values in the settings."""
+        start_param = self.settings.child('spectrometer_settings', 'start_pixel')
+        stop_param = self.settings.child('spectrometer_settings', 'stop_pixel')
+        start, stop = self.controller.set_pixel_range(start_param.value(), stop_param.value())
+        n_max = self.controller._number_of_pixels - 1
+        start_param.setOpts(max=n_max - 1)
+        stop_param.setOpts(max=n_max)
+        if start != start_param.value():
+            start_param.setValue(start)
+        if stop != stop_param.value():
+            stop_param.setValue(stop)
+        self.init_axis()
+
+    def update_calibration_curve(self):
+        """Evaluate the calibration on the current wavelengths. Non positive
+        values (e.g. from extrapolation) are set to NaN to avoid wrong divisions."""
+        curve = np.array(self.calibration_func(self.controller.wavelengths), dtype=float)
+        if curve.ndim > 0:
+            if np.any(curve <= 0):
+                logger.warning("Calibration has non positive values, they are replaced by NaN")
+            curve[curve <= 0] = np.nan
+        elif curve <= 0:
+            curve = np.nan
+        self.calibration_curve = curve
 
     def init_axis(self):
         wavelengths = self.controller.wavelengths
@@ -202,7 +248,7 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
                                     axes=[shot_axis, self.x_axis],
                                     # nav_indexes=(0,),
                                     labels=['Avantes-Burst'])
-        self.calibration_curve = self.calibration_func(self.controller.wavelengths)
+        self.update_calibration_curve()
         self.dte_signal_temp.emit(DataToExport(name='Avantes', data=[dfp]))
 
     def close(self):
@@ -223,10 +269,15 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
         Naverage: int
             Number of hardware averaging.
         """
+        calibrate = self.settings.child("calibration_settings", "calibration").value()
         if not self.burst_mode:
-            data,timestamp = self.controller.grab_spectrum()
-            if self.settings.child("calibration_settings", "calibration").value():
-                data /= self.calibration_curve
+            result = self.controller.grab_spectrum()
+            if result is None:
+                self.emit_status(ThreadCommand('Update_Status', ['Acquisition failed or aborted', 'log']))
+                return
+            data, timestamp = result
+            if calibrate:
+                data = data / self.calibration_curve
 
             dfp = DataFromPlugins(name='Avantes', data=data, dim='Data1D',
                                 labels=['data'], axes=[self.x_axis])
@@ -240,7 +291,13 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
                 self.dte_signal.emit(DataToExport(name='spectrum', data= [dfp]))
         else:
             N = int(self.shot_number)
-            data, _ = self.controller.grab_spectrum(N=N)
+            result = self.controller.grab_spectrum(N=N)
+            if result is None:
+                self.emit_status(ThreadCommand('Update_Status', ['Burst acquisition failed or aborted', 'log']))
+                return
+            data, _ = result
+            if calibrate:
+                data = data / self.calibration_curve
             shot_axis = Axis(label='Shot #', units='', data=np.arange(N))
             dfp = DataFromPlugins(name='Avantes',
                         data=[data],
@@ -251,7 +308,6 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
 
             self.dte_signal.emit(DataToExport(name='Avantes', data= [dfp]))
 
- 
     def stop(self):
         self.controller.abort_measurement()
 
@@ -268,10 +324,11 @@ class DAQ_1DViewer_Avantes(DAQ_Viewer_base):
             logger.info(f"Calibration is defined from {λcalib[0]:.2f}nm to {λcalib[-1]:.2f}nm")
 
             calibfac = calibdat[:, 1]
-            self.calibration_func = interp1d(λcalib, calibfac, kind="cubic", fill_value="extrapolate")
-        except:
+            kind = "cubic" if len(λcalib) >= 4 else "linear"
+            self.calibration_func = interp1d(λcalib, calibfac, kind=kind, fill_value="extrapolate")
+        except Exception as e:
             self.calibration_func = lambda x:1
-            print("Bad calibration file")
+            logger.error(f"Bad calibration file: {e}")
 
 if __name__ == '__main__':
     main(__file__)
